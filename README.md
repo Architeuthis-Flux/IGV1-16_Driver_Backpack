@@ -1,6 +1,10 @@
 # IGV1-16 Driver Backpack
 This is a board that screws onto the back of an IGV1-16, GIPS-16 or Burroughs Self-Scan and handles the HV buffering between it and a RPi Pico W, among other things. 
+
+[Here's the Hackaday.io page with more details about some of the hardware involved](https://hackaday.io/project/190028-igv1-16-car-compass)
+
 ![IMG_2801 2](https://user-images.githubusercontent.com/20519442/228124671-2401a1ef-7dea-4a35-b771-d1d10b69e3e6.jpeg)
+
 ![IMG_3037](https://user-images.githubusercontent.com/20519442/228124653-a4e316f6-7dc2-4522-b0a4-e72d010b065c.jpeg)
 
 I made a thing to handle the mess of wiring from the [IGV1-16 Compass](https://github.com/Architeuthis-Flux/IGV1-16-Compass) but I had a ton of extra board space and GPIO so I ended up making a somewhat generalized development board for these plasma scan displays. 
