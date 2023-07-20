@@ -1,3 +1,5 @@
+
+#include <Arduino.h>
 #include "bitmaps.h"
 
 #include <string.h>
@@ -46,20 +48,20 @@ uint offset, sm;
 int scroll = 0;   //position of whatever is on the display, so this is the compass heading or text scroll
 int scroll2 = 0;  // used to increment scroll for text scrolling (this value here is the start point)
 
-int displayedMenu = 0;  //mode selection - 0 for compass  1 = Menu   2 = scrolling text
+int displayedMenu = 3;  //mode selection - 0 for compass  1 = Menu   2 = scrolling text   3 = splSH
 
 //general display stuff
-char displayText[500] = { "Holy fuck guys! It's a pIGV1-16\0 " };  //this is where you put text to display (from wifi or serial or whatever) terminated with \0
-int invertedChars[500];                                            // put 1 in locations where you want text to be knockout
-unsigned char displayBuffer[3000];                                 //this is where the actual bitmap is loaded to be shown on the display
+char displayText[500] = { "Calibration error! Setting to 3D DHI. Remove compass module and tumble until calibration is finished, then reset and run 2D calibration.     \0 " };  //this is where you put text to display (from wifi or serial or whatever) terminated with \0
+int invertedChars[500];                                                                                                                                                          // put 1 in locations where you want text to be knockout
+unsigned char displayBuffer[3000];                                                                                                                                               //this is where the actual bitmap is loaded to be shown on the display
 
 
 //compass specific stuff
 int selectedStart = 0;  //this lets the display follow the selected menu items
 unsigned char menuArray[6][20] = {
-  { "Heading" }, { "Declination" }, { "Brightness" }, { "Altitude" }, { "Marker" }, { "Drive in circles!!" }
+  { "Heading" }, { "Declination" }, { "Brightness" }, { "Clicks" }, { "Marker" }, { "              " }
 };
-int menuArrayLengths[6] = { 7, 11, 10, 8, 6, 19 };
+int menuArrayLengths[6] = { 7, 11, 10, 6, 6, 19 };
 int hoveredMenuItem = 0;  // 1 = Heading   2 = Declination    3 = Brightness     4 = Calibrate
 int selectedMenuItem = 0;
 int menuItem = 0;  // 1 = Heading   2 = Declination    3 = Brightness     4 = Calibrate   5 = Marker
@@ -73,7 +75,15 @@ int showAltitude = 0;  //this shows pressure altitude so it's not very accurate,
 int declinationSet = 0;
 int Declination = 11;  // substitute your magnetic declination but really this wont matter because this is used to adjust the heading
 float pressureOffset = 0.0;
+int clicks = 1;
+bool lastState = 0;
 int position = 0;
+
+int tilt = 0;
+
+int calibrationError = 0;
+
+uint8_t HIoffsetStatus = 0;
 
 //scrolling text stuff
 int charsInDisplay = 0;
@@ -95,7 +105,7 @@ volatile bool pressed = 0;
 int lastPosition = 0;
 int oldPos = 0;
 
-boolean newData = false;
+boolean newData = true;
 volatile int encoder_value = 0;
 int encoderOffset = 0;
 int encoderRaw = 0;
@@ -111,26 +121,392 @@ static const float M_V = 42.0589f;
 static const float M_H = 23.1087f;
 static const float MAG_DECLINATION = 11.1477f;
 
-static const uint32_t SERIAL_UPDATE_PERIOD_MSEC = 100;
+static const uint32_t SERIAL_UPDATE_PERIOD_MSEC = 500;
 
 // Dynamic Hard Iron corrector
-static const bool ENABLE_DHI_CORRECTOR = false;
+static bool ENABLE_DHI_CORRECTOR = true;
 
 // Dynamic Hard Iron Corrector allgorithm (otherwise 3D)
-static const bool USE_2D_DHI_CORRECTOR = false;
+static bool USE_2D_DHI_CORRECTOR = true;
 
 // I2C Clock Speed (Uncomment one only)
-static const uint32_t I2C_CLOCK = 1000000; /* 100000 */ /* 400000 */
+static const uint32_t I2C_CLOCK = 400000; /* 100000 */ /* 400000 */
 
 // Instantiate class object
 USFSMAX usfsmax;
 
-static bool gyroCalActive;
+static bool gyroCalActive = false;
 
 // Data-ready interrupt handler
 static volatile bool dataReady = true;
+
+    uint8_t calRegister;
+    uint8_t dhiRSQlsb;
+    uint8_t dhiRSQmsb;
+    int dhiRSQ;
+
+
+void setup() {
+
+
+
+  // Open serial port
+  Serial.begin(115200);
+  delay(200);
+
+  // Initialize usfsmax I2C bus
+
+  i2cBegin();
+  delay(100);
+
+
+  i2cSetClock(100000);
+  delay(200);
+
+
+  HIoffsetStatus = i2cReadByte(0x57, 0x01);  // High bit will be 1 if there's a valid HI offset in EEPROM
+  HIoffsetStatus = HIoffsetStatus & 0b10000000;
+  HIoffsetStatus = HIoffsetStatus >> 7;
+
+  if (USE_2D_DHI_CORRECTOR == true && HIoffsetStatus == 0)  //The compass module hangs if there's no HI offset and it tries to use the 2D HI correction
+  {
+    calibrationError = 1;
+    USE_2D_DHI_CORRECTOR = false;
+
+    displayedMenu = 2;
+    calibratingFlag = 1;
+
+    for (int i = 0; i < 865; i++) {
+      delay(11);
+      scroll2 = i;
+    }
+    scroll2 = 0;
+
+    Serial.println("Calibration Error! Setting to 3D DHI");  //so this sets it to 3D DHI, then you remove the compass and tumble it to get any HI offset
+    delay(2000);                                             //then reset the compass and then do a 2D Calibration (this is a bug in the compass module code)
+  }
+
+
+  usfsmax.setGeoMag(M_V, M_H, MAG_DECLINATION);
+  delay(100);
+  Serial.println("Initializing usfsmax...\n");
+  usfsmax.begin();
+
+
+
+  delay(300);
+  if (ENABLE_DHI_CORRECTOR) {  //this was originally in the USFSMAX.begin but I moved it here so I can have some control over it
+    if (USE_2D_DHI_CORRECTOR) {
+
+      Serial.println("Using 2D DHI");
+      // Enable DHI corrector, 2D (0x10|0x50)
+
+
+      Serial.print("HIoffsetStatus\t");
+      Serial.println(HIoffsetStatus);
+
+      if (HIoffsetStatus == 0) {
+
+        calibratingFlag = 1;
+      }
+      i2cWriteByte(0x57, 0x61, 0x50);
+      //calibratingFlag = 1;
+    } else {
+
+      Serial.println("Using 3D DHI");
+
+
+      Serial.print("HIoffsetStatus\t");
+      Serial.println(HIoffsetStatus);
+
+      if (HIoffsetStatus == 0) {
+
+        calibratingFlag = 1;
+      }
+      // Enable DHI corrector, 3D (0x10)
+      i2cWriteByte(0x57, 0x61, 0x10);
+    }
+  }
+
+
+  delay(100);
+  usfsmax.retrieveCalibration();
+
+  delay(100);
+  i2cSetClock(I2C_CLOCK);
+  
+  pinMode(17, OUTPUT_12MA);
+  digitalWrite(17, HIGH);
+  delay(1);
+  digitalWrite(17, LOW);
+
+  serialPrintMessage("USFXMAX_0 successfully initialized!\n");
+  Serial.begin(115200);
+
+
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+
+  pinMode(BUTTONENC, INPUT_PULLUP);
+  displayedMenu = 3;
+  //loadDisplayBuffer();
+  //writeNeon();
+
+  offset = pio_add_program(pio, &quadrature_program);
+  sm = pio_claim_unused_sm(pio, true);
+  quadrature_program_init(pio, sm, offset, QUADRATURE_A_PIN, QUADRATURE_B_PIN);
+
+  int eepromCommitFlag = 0;
+  EEPROM.begin(256);
+
+  EEPROM.get(0, Declination);
+
+
+  EEPROM.get(10, brightness);
+  if (brightness > 500 || brightness < 50) {
+    brightness = 160;
+    EEPROM.put(10, brightness);
+    eepromCommitFlag = 1;
+  }
+
+  EEPROM.get(20, marker);
+  if (marker > 360 || marker < 0) {
+    marker = 180;
+    EEPROM.put(20, marker);
+    eepromCommitFlag = 1;
+  }
+
+  EEPROM.get(30, showHeading);
+  if (showHeading != 1 || showHeading != 0) {
+    showHeading = 1;
+    EEPROM.put(30, showHeading);
+    eepromCommitFlag = 1;
+  }
+
+  EEPROM.get(40, clicks);
+  if (clicks > 2 || clicks < 0) {
+    clicks = 2;
+    EEPROM.put(40, clicks);
+    eepromCommitFlag = 1;
+  }
+
+
+  if (eepromCommitFlag == 1) //only commit to the fake EEPROM if a number was out of bounds and needs it
+  {
+     EEPROM.commit(); 
+  }
+
+  delay(100);
+  // Attach interrupt
+  pinMode(INT_PIN, INPUT);
+  attachInterrupt(INT_PIN, handleInterrupt, RISING);
+
+  if (calibrationError == 1) {
+    usfsmax.resetDhi();
+  }
+}
+
+int showSplash = 1;
+
+unsigned long holdButton = 0;
+unsigned long holdButtonFirstPressed = 0;
+unsigned long lastPress = 0;
+int pressFlag = 0;
+int showDHI = 0;
+
+int newPositionEncoder = 0;
+
+void loop() {
+
+
+  pio_sm_exec_wait_blocking(pio, sm, pio_encode_in(pio_x, 32)); //PIO rotary encoder handler
+
+  encoderRaw = (pio_sm_get_blocking(pio, sm));
+
+  encoder_value = encoderRaw - encoderOffset;
+
+
+  if (encoder_value != newPositionEncoder) {
+    position = newPositionEncoder;
+    encoderISR();
+  }
+
+
+if (pressed == 1) encoderButtonISR();
+
+
+  int buttonState = digitalRead(BUTTONENC);
+
+  if (buttonState == 0) {
+    //click();
+    //click();
+    //click();
+   // pressed = 1;
+    // Serial.println("Pressed!");
+  }
+
+
+
+//
+
+
+
+  static float angles[3];
+  static uint32_t count;
+  static uint32_t last_refresh;
+
+  if (dataReady) {
+
+    count++;
+
+    dataReady = false;
+
+    usfsmax.update();
+
+    if (usfsmax.gotQuat()) {
+      float quat[4] = {};
+      usfsmax.readQuat(quat);
+      quat2euler(quat, angles);
+    }
+  }
+
+
+
+
+  if (showSplash == 1) {
+
+    if (millis() < 2000 || (usfsmax.gotQuat() == 0)) {
+      scroll2 = 0;
+      displayedMenu = 3;
+    } else {
+      showSplash = 0;
+      displayedMenu = 0;
+      scroll2 = (int)angles[2];
+    }
+  } else {
+    scroll2 = (int)angles[2];
+  }
+
+
+  if (millis() - last_refresh > SERIAL_UPDATE_PERIOD_MSEC) {  //runs twice per second (or whatever you set the serial update period to)
+
+    //Serial.println(gyroCalActive);
+//click(2);
+    if (USE_2D_DHI_CORRECTOR == true && ((angles[0] > 10 || angles[0] < -10) || (angles[1] > 10 || angles[1] < -10))) {  //2D calibration values are discarded if the tilt is over 10 degrees, so this tells you
+      Serial.println("Tilt!");
+      tilt = 1;
+    } else {
+      tilt = 0;
+    }
+
+if (calibratingFlag == 1 || showDHI == 1)
+  {
+    calRegister = i2cReadByte(0x57, 0x01);
+    Serial.println(calRegister, HEX);
+
+
+    dhiRSQlsb = i2cReadByte(0x57, 0x5E);
+    dhiRSQmsb = i2cReadByte(0x57, 0x5F);
+    dhiRSQ = dhiRSQmsb << 8;
+    dhiRSQ |= dhiRSQlsb;
+    Serial.println(dhiRSQ);
+  }
+
+    if (showDHI == 1) {
+
+      strcpy(displayText, " DHI Rsq = 0.                                                                                       \0");
+      char dhiASCII[4];
+
+      itoa(dhiRSQ, dhiASCII, 10);
+
+      for (int i = 0; i < 4; i++) {
+        displayText[13 + i] = dhiASCII[i];
+
+        Serial.println(dhiASCII[i]);
+      }
+
+      displayedMenu = 2;
+      scroll2 = 0;
+      delay(10000);
+      displayedMenu = 0;
+      showDHI = 0;
+    }
+
+    if (calibratingFlag == 1) {
+      //Serial.println(i2cReadByte(0x57, 0x01),BIN);
+
+
+      if ((calRegister & 0x80) > 0)  //checks if there's a valid HI offset
+      {
+
+        Serial.println(calRegister, HEX);
+        calibratingFlag = 0;
+        dhiRSQlsb = i2cReadByte(0x57, 0x5E);
+        dhiRSQmsb = i2cReadByte(0x57, 0x5F);
+        dhiRSQ = dhiRSQmsb << 8;
+        dhiRSQ |= dhiRSQlsb;
+        Serial.println(dhiRSQ);
+        showDHI = 1;
+
+
+
+      } else {
+
+        Serial.println(calRegister, HEX);
+
+        dhiRSQlsb = 85;
+        dhiRSQmsb = 164;
+        dhiRSQ = dhiRSQmsb << 8;
+        dhiRSQ |= dhiRSQlsb;
+        Serial.println(dhiRSQ);
+      }
+    }
+    //last_refresh = millis();
+    Serial.println(calibratingFlag);
+    last_refresh = millis();
+
+    serialInterfaceHandler();
+
+    serialReportAngles(count, angles);  //this prints roll pitch and yaw to the serial monitor
+  }
+
+
+
+
+  if (buttonState == 0) {  //hold the encoder button for 10 seconds to reset the DHI and start a calibration
+
+    holdButton = millis();
+    if (holdButton - holdButtonFirstPressed > 7000) {
+      calibratingFlag = 1;
+      usfsmax.resetDhi();
+
+    } else {
+    }
+
+
+  } else {
+    holdButtonFirstPressed = millis();
+  }
+
+  if (buttonState == 0 && (millis() - lastPress > 200) && pressFlag == 0) {
+    pressed = 1;
+    lastPress = millis();
+    pressFlag = 1;
+
+  } else if (buttonState == 1) {
+    pressFlag = 0;
+    pressed = 0;
+  }
+
+
+
+}
+
+
 static void handleInterrupt() {
+
   dataReady = true;
+  //Serial.println("!");
 }
 
 static void sendOneToProceed(void) {
@@ -173,184 +549,25 @@ static void serialInterfaceHandler() {
   }
 
   // Type '3' to reset the DHI corrector
-  if (serial_input == '3') { usfsmax.resetDhi(); }
+  if (serial_input == '3') {
+
+    usfsmax.resetDhi();
+
+    calibratingFlag = 1;
+  }
+  if (serial_input == '4') {
+
+    showDHI = 1;
+  }
   serial_input = 0;
 }
 
 
-void setup() {
-
-
-  pinMode(ENC_A, INPUT_PULLUP);
-  pinMode(ENC_B, INPUT_PULLUP);
-
-  pinMode(BUTTONENC, INPUT_PULLUP);
-  displayedMenu = 3;
-  //loadDisplayBuffer();
-  //writeNeon();
-  EEPROM.begin(64);
-  offset = pio_add_program(pio, &quadrature_program);
-  sm = pio_claim_unused_sm(pio, true);
-  quadrature_program_init(pio, sm, offset, QUADRATURE_A_PIN, QUADRATURE_B_PIN);
-
-  usfsmax.setGeoMag(M_V, M_H, MAG_DECLINATION);
-
-  // Open serial port
-  Serial.begin(115200);
-  delay(20);
-
-  // Initialize usfsmax I2C bus
-  i2cBegin();
-  delay(10);
-  i2cSetClock(100000);
-  delay(20);
-
-  Serial.println("Initializing usfsmax...\n");
-  usfsmax.begin();
-
-  // Set the I2C clock to high speed for run-mode data collection
-  i2cSetClock(I2C_CLOCK);
-  delay(1000);
-
-  // Attach interrupt
-  pinMode(INT_PIN, INPUT);
-  attachInterrupt(INT_PIN, handleInterrupt, RISING);
-
-  serialPrintMessage("USFXMAX_0 successfully initialized!\n");
-  Serial.begin(115200);
-
-  EEPROM.get(0, Declination);
-
-
-  EEPROM.get(10, brightness);
-  if (brightness > 500 || brightness < 50) {
-    brightness = 160;
-    EEPROM.put(10, brightness);
-  }
-
-  EEPROM.get(20, marker);
-  if (marker > 360 || marker < 0) {
-    marker = 180;
-    EEPROM.put(20, marker);
-  }
-
-  EEPROM.get(30, showHeading);
-  if (showHeading != 1 || showHeading != 0) {
-    showHeading = 1;
-    EEPROM.put(30, showHeading);
-  }
-}
-
-int showSplash = 1;
-
-unsigned long holdButton = 0;
-unsigned long holdButtonFirstPressed = 0;
-unsigned long lastPress = 0;
-int pressFlag = 0;
-
-int newPositionEncoder = 0;
-
-void loop() {
-
-
-  pio_sm_exec_wait_blocking(pio, sm, pio_encode_in(pio_x, 32));
-
-  encoderRaw = (pio_sm_get_blocking(pio, sm));
-
-  encoder_value = encoderRaw - encoderOffset;
-
-
-  if (encoder_value != newPositionEncoder) {
-    position = newPositionEncoder;
-    encoderISR();
-  }
-
-
-
-  int buttonState = digitalRead(BUTTONENC);
-
-
-  // interrupts();
-  if (pressed == 1) encoderButtonISR();
-
-
-
-  static float angles[3];
-  static uint32_t count;
-  static uint32_t last_refresh;
-
-  if (dataReady) {
-
-    count++;
-
-    dataReady = false;
-
-    usfsmax.update();
-
-    if (usfsmax.gotQuat()) {
-      float quat[4] = {};
-      usfsmax.readQuat(quat);
-      quat2euler(quat, angles);
-    }
-  }
-
-  if (showSplash == 1) {
-
-    if (millis() < 2000 || (usfsmax.gotQuat() == 0)) {
-      scroll2 = 0;
-      displayedMenu = 3;
-    } else {
-      showSplash = 0;
-      displayedMenu = 0;
-      scroll2 = (int)angles[2];
-    }
-  } else {
-    scroll2 = (int)angles[2];
-  }
-
-
-  if (millis() - last_refresh > SERIAL_UPDATE_PERIOD_MSEC) {
-
-
-    //Serial.println(gyroCalActive);
-
-    last_refresh = millis();
-
-    serialInterfaceHandler();
-
-    serialReportAngles(count, angles);
-  }
-
-
-  if (buttonState == 0) {
-
-    holdButton = millis();
-    if (holdButton - holdButtonFirstPressed > 7000) {
-      calibratingFlag = 1;
-      usfsmax.resetDhi();
-
-    } else {
-    }
-
-
-  } else {
-    holdButtonFirstPressed = millis();
-  }
-
-  if (buttonState == 0 && (millis() - lastPress > 200) && pressFlag == 0) {
-    pressed = 1;
-    lastPress = millis();
-    pressFlag = 1;
-
-  } else if (buttonState == 1) {
-    pressFlag = 0;
-    pressed = 0;
-  }
-}
-
 void pressedEncoder() {
   //holdButtonFirstPressed = millis();
+  //Serial.println("Pressed!");
   pressed = 1;
+  //click();
 }
 
 void encoderISR() {
@@ -358,6 +575,9 @@ void encoderISR() {
 
 
   newPositionEncoder = encoder_value;  //encoder.getPosition();
+
+
+  Serial.println(newPositionEncoder);
   if (declinationSet == 1) {
 
     Declination = (position % 360);
@@ -430,23 +650,76 @@ void encoderISR() {
   }
 
 
-  if (showAltitude == 1) {
+  // if (showAltitude == 1) {
 
-    if (oldPos < position) {
-      pressureOffset += 0.05;
+  //   if (oldPos < position) {
+  //     pressureOffset += 0.05;
 
-    } else {
-      pressureOffset -= 0.05;
-    }
-    oldPos = position;
-    EEPROM.put(40, pressureOffset);
-  }
+  //   } else {
+  //     pressureOffset -= 0.05;
+  //   }
+  //   oldPos = position;
+  //   EEPROM.put(40, pressureOffset);
+  // }
 
 
   // letter = abs(position);
+  
   hoveredMenuItem = abs(position % 7);
+
+if (displayedMenu == 1) {
+  if (hoveredMenuItem >= 1 && hoveredMenuItem <= 5) 
+  {
+
+    click(2);
+  } }
+  else {
+
+    click(clicks);
+  }
+
+
   //position = Declination;
 }
+
+
+void click(int type)
+{
+  
+
+  
+if (type == 1) {
+  if (lastState == 1)
+  { digitalWrite(17, LOW);
+    lastState = 0;
+   
+  }
+  else
+  { digitalWrite(17, HIGH);
+    lastState = 1;
+   
+  }
+
+} else if (type == 2)
+{
+
+    digitalWrite(17, LOW);
+    lastState = 0;
+    delay(5);
+    digitalWrite(17, HIGH);
+
+
+} else if (type == 3)
+{
+digitalWrite(17, LOW);
+
+}
+
+
+}
+
+
+
 
 
 void encoderButtonISR() {
@@ -467,6 +740,7 @@ void encoderButtonISR() {
     showAltitude = 0;
     showHeading = 1;
     EEPROM.put(20, marker);
+    EEPROM.commit();
     markerSetFlag = 0;
 
     hoveredMenuItem = 0;
@@ -493,6 +767,7 @@ void encoderButtonISR() {
     }
     //selectedMenuItem = 0;
     EEPROM.put(30, showHeading);
+    EEPROM.commit();
     hoveredMenuItem = 0;
     selectedMenuItem = 0;
     //displayedMenu = 0;
@@ -510,10 +785,12 @@ void encoderButtonISR() {
       selectedMenuItem = 2;
       displayedMenu = 0;
       EEPROM.put(0, Declination);
+      EEPROM.commit();
     } else {
       declinationSet = 0;
       EEPROM.put(0, Declination);
       EEPROM.get(30, showHeading);
+      EEPROM.commit();
       hoveredMenuItem = 0;
       selectedMenuItem = 0;
       //selectedMenuItem = hoveredMenuItem;
@@ -554,25 +831,34 @@ void encoderButtonISR() {
   if (selectedMenuItem == 4) {
     declinationSet = 0;
     encoderOffset = position;
-    if (showAltitude == 0) {
-      showAltitude = 1;
-      showHeading = 0;
+    if (clicks == 0) {
+      clicks = 2;
+      //click(3);
+      
+    } else if (clicks == 2) {
+      
+      clicks = 1;
+      //click(2);
+
     } else {
-      showAltitude = 0;
-
-      //EEPROM.get(30, showHeading);
-      //showHeading = 1;
+      clicks = 0;
     }
-    hoveredMenuItem = 0;
-    selectedMenuItem = 0;
+    EEPROM.put(40, clicks);
+    hoveredMenuItem = 4;
+    //selectedMenuItem = 4;
+    //EEPROM.commit();
+    //return;
   }
-
+  click(2);
+  EEPROM.commit();
 
   displayedMenu = !displayedMenu;
 
-
+//digitalWrite(17, LOW);
   //hoveredMenuItem = 0;
   //interrupts();
+  //click();
+  
 }
 
 
@@ -598,7 +884,7 @@ void setup1() {
 
 void loop1() {
 
- 
+
 
   loadDisplayBuffer();
   writeNeon();
@@ -684,7 +970,12 @@ void showHeadingNumbers(int headingToShow) {
   }
 
   if (calibratingFlag == 1) {
-    menuReminderAscii = 82;
+
+    if (tilt == 0) {
+      menuReminderAscii = 82;
+    } else {
+      menuReminderAscii = 84;
+    }
   }
 
   if (showAltitude == 1 && showHeading == 0 && selectedMenuItem != 2 && selectedMenuItem != 3) {
@@ -745,8 +1036,8 @@ void loadDisplayBuffer(void) {  //this fills displayBuffer[] with data depending
 
           displayBuffer[i] = splash[halftoneStep][i];
         }
-        halftoneStep++;
-        if (halftoneStep >= 3) halftoneStep = 1;
+        //halftoneStep++;
+        //if (halftoneStep >= 3) halftoneStep = 1;
         break;
       }
     case 0:  //compass
@@ -795,6 +1086,12 @@ void loadDisplayBuffer(void) {  //this fills displayBuffer[] with data depending
           displayText[displayTextLocation] = ' ';
           displayTextLocation++;
         }
+        for (int i = 0; i < 30; i++)
+        {
+          displayText[displayTextLocation] = ' ';
+          displayTextLocation++;
+        }
+
 
 
 
@@ -936,17 +1233,18 @@ void writeNeon(void) {  //this function writes data to the display
     } else if (showAltitude == 1 && declinationSet == 0) {
 
       float pressure = (float)((usfsmax.baroADC / 4096.0f));
-      //pressure -= 92.0f;
-      ///Serial.println(pressure);
+      pressure += 142.0f;
+      Serial.println(pressure);
+      //Serial.println(usfsmax.baroADC);
 
-      float pressureExp = pow((pressure / (1013.25f + pressureOffset)), 0.190284);
+      float pressureExp = pow((pressure / (1013.25f)), 0.190284);
 
       float elevation = 145366.45f * (1 - pressureExp);
 
       //int elevationInt = (int)filter.add(elevation); //use this with the movingAvg library
       int elevationInt = (int)elevation;
 
-      Serial.println(pressureOffset);
+      //Serial.println(pressureOffset);
 
       showHeadingNumbers(elevationInt);
     }
@@ -1047,7 +1345,7 @@ void writeNeon(void) {  //this function writes data to the display
 
 
   //scanLocation = 0;
-  delayMicroseconds(45);
+  delayMicroseconds(120);
 
 
   //digitalWrite(blank, LOW);

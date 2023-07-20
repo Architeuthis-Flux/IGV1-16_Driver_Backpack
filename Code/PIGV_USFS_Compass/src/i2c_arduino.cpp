@@ -35,33 +35,35 @@
 
 void i2cBegin(void)
 {
-    Wire.begin();
+  Wire1.setSDA(26);
+  Wire1.setSCL(27);
+    Wire1.begin();
 }
 
 void i2cSetClock(uint32_t rate)
 {
-    Wire.setClock(rate);
+    Wire1.setClock(rate);
 }
 
 uint8_t i2cReadByte(uint8_t address, uint8_t subAddress)
 {
-    Wire.beginTransmission(address);      
-    Wire.write(subAddress);       
-    Wire.endTransmission(false);     
-    Wire.requestFrom(address, (size_t) 1);     
-    return Wire.read();    
+    Wire1.beginTransmission(address);      
+    Wire1.write(subAddress);       
+    Wire1.endTransmission(false);     
+    Wire1.requestFrom(address, (size_t) 1);     
+    return Wire1.read();    
 }
 
 void i2cReadBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest)
 {  
-    Wire.beginTransmission(address); 
-    Wire.write(subAddress);
-    Wire.endTransmission(false);     
-    Wire.requestFrom(address, (size_t) count); 
+    Wire1.beginTransmission(address); 
+    Wire1.write(subAddress);
+    Wire1.endTransmission(false);     
+    Wire1.requestFrom(address, (size_t) count); 
 
     uint8_t i = 0;
-    while (Wire.available()) {
-        dest[i++] = Wire.read();
+    while (Wire1.available()) {
+        dest[i++] = Wire1.read();
     }       
 }
 
@@ -72,12 +74,12 @@ void i2cWriteByte(uint8_t devAddr, uint8_t regAddr, uint8_t data)
 
 void i2cWriteBytes(uint8_t devAddr, uint8_t regAddr, uint8_t length, uint8_t *data)
 {
-    Wire.beginTransmission(devAddr);
-    Wire.write((uint8_t) regAddr);
+    Wire1.beginTransmission(devAddr);
+    Wire1.write((uint8_t) regAddr);
 
     for (uint8_t i=0; i < length; i++) {
-        Wire.write((uint8_t)data[i]);
+        Wire1.write((uint8_t)data[i]);
     }
 
-    Wire.endTransmission();
+    Wire1.endTransmission();
 }

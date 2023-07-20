@@ -62,7 +62,7 @@ void USFSMAX::begin(const bool enableDhiCorrector, const bool use2DDhiCorrector)
     // Read the coprocessor's current fusion status
     STAT = i2cReadByte(MAX32660_ADDR, FUSION_STATUS);                                                                         
     delay(100);
-//Serial.println(STAT,HEX);
+Serial.println(STAT,HEX);
     if (STAT == 0) {
 
         // Stop sensor fusion
@@ -93,34 +93,64 @@ void USFSMAX::begin(const bool enableDhiCorrector, const bool use2DDhiCorrector)
     // Check for sensor errors
     STAT = i2cReadByte(MAX32660_ADDR, SENS_ERR_STAT);
     if (STAT !=0) {
-        while(1) {;}
+        while(1) {
+          Serial.println("fuck");
+          return;
+          }
     }
 
+    while(1){
+STAT = i2cReadByte(MAX32660_ADDR, CALIBRATION_STATUS);
+Serial.println(STAT,BIN);
+STAT = STAT & 0b00000001;
+if (STAT == 0)
+{
+  delay(100);
+  break;
+}
+delay(100);
+    }
+
+/*
+delay(200);
     if (enableDhiCorrector) {
         if (use2DDhiCorrector) {
             // Enable DHI corrector, 2D (0x10|0x50)
-            i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x51);
+            i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0xD0);
         } else {
             // Enable DHI corrector, 3D (0x10)
             i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x10);
-        }
-    }
-    
-    delay(100);
+        } }
 
-    retrieveCalibration();
+    */
+    delay(200);
 
-    delay(500);
+    //retrieveCalibration();
+
+    //delay(500);
 }
 
 void USFSMAX::retrieveCalibration(void)
 {
+  delay(100);
+  Serial.println("gyro");
+    delay(100);
+  
     USFSMAX::retrieveFullGyroCal();
     delay(100);
+     Serial.println("accel");
+    delay(100);
+
     USFSMAX::retrieveFullAccelCal();
     delay(100);
+     Serial.println("ellip");
+    delay(100);
+
     USFSMAX::retrieveEllipMagCal();
     delay(100);
+     Serial.println("mag");
+    delay(100);
+
     USFSMAX::retrieveFinalMagCal();
     delay(100);
 }
@@ -485,19 +515,24 @@ void USFSMAX::resetDhi()
 
         // Assert DHI Enable=true, DHI Reset=true and 2D Corrector=true
         // (0x40|0x20|0x10)
-        i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x70);                                                                 
+         i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x20);   
+         delay (1000);
+        i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x50);                                                                 
     } else {
 
         // Assert DHI Enable=true, DHI Reset=true and 2D Corrector=false
         // (0x00|0x20|0x10)
-        i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x30);
+        i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x20);
+
+                 delay (1000);
+        i2cWriteByte(MAX32660_ADDR, CALIBRATION_REQUEST, 0x10);  
     }
 }
 
 void USFSMAX::retrieveConfig()
 {
     i2cReadBytes(MAX32660_ADDR, COPRO_CFG_DATA0, 30, &cfg_buff[0]);
-    delay(100);
+    delay(200);
     i2cReadBytes(MAX32660_ADDR, COPRO_CFG_DATA1,
             (sizeof(CoProcessorConfig_t) - 30), &cfg_buff[30]);
     memcpy(&config, cfg_buff, sizeof(CoProcessorConfig_t));
@@ -506,7 +541,7 @@ void USFSMAX::retrieveConfig()
 void USFSMAX::retrieveEllipMagCal()
 {
     i2cReadBytes(MAX32660_ADDR, ELLIP_MAG_CAL_DATA0, 30, &EllipMagCal_buff[0]);
-    delay(100);
+    delay(200);
     i2cReadBytes(MAX32660_ADDR, ELLIP_MAG_CAL_DATA1, (sizeof(full_adv_cal_t) - 30),
             &EllipMagCal_buff[30]);
     memcpy(&ellipsoid_magcal, EllipMagCal_buff, sizeof(full_adv_cal_t));
@@ -515,7 +550,7 @@ void USFSMAX::retrieveEllipMagCal()
 void USFSMAX::retrieveFinalMagCal()
 {
     i2cReadBytes(MAX32660_ADDR, FINE_MAG_CAL_DATA0, 30, &FineMagCal_buff[0]);
-    delay(100);
+    delay(200);
     i2cReadBytes(MAX32660_ADDR, FINE_MAG_CAL_DATA1, (sizeof(full_adv_cal_t) - 30),
             &FineMagCal_buff[30]);
     memcpy(&final_magcal, FineMagCal_buff, sizeof(full_adv_cal_t));
@@ -524,7 +559,7 @@ void USFSMAX::retrieveFinalMagCal()
 void USFSMAX::retrieveFullAccelCal()
 {
     i2cReadBytes(MAX32660_ADDR, ACCEL_CAL_DATA0, 30, &AccelCal_buff[0]);
-    delay(100);
+    delay(200);
     i2cReadBytes(MAX32660_ADDR, ACCEL_CAL_DATA1, (sizeof(full_adv_cal_t) - 30),
             &AccelCal_buff[30]);
     memcpy(&accelcal, AccelCal_buff, sizeof(full_adv_cal_t));
@@ -533,10 +568,12 @@ void USFSMAX::retrieveFullAccelCal()
 void USFSMAX::retrieveFullGyroCal()
 {
     i2cReadBytes(MAX32660_ADDR, GYRO_CAL_DATA0, 30, &gyroCal_buff[0]);
-    delay(100);
+    delay(200);
     i2cReadBytes(MAX32660_ADDR, GYRO_CAL_DATA1, (sizeof(full_adv_cal_t) - 30),
             &gyroCal_buff[30]);
     memcpy(&gyrocal, gyroCal_buff, sizeof(full_adv_cal_t));
+
+
 }
 
 float USFSMAX::uint32_reg_to_float (uint8_t *buf)
