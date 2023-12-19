@@ -140,8 +140,8 @@ class USFSMAX {
         full_adv_cal_t gyrocal;
 
         void begin(
-                const bool enableDhiCorrector=true,
-                const bool use2DDhiCorrector=true);
+                 bool enableDhiCorrector=true,
+                 bool use2DDhiCorrector=true);
 
         float gyroDpsPerCount(void);
 
